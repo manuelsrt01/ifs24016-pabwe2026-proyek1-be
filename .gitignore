@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+# Database lokal/produksi: jangan pernah di-commit
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+# Hasil test CI
+reports/*
+!reports/.gitkeep
+.DS_Store

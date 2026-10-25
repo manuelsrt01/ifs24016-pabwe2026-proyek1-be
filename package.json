@@ -1,0 +1,19 @@
+{
+  "name": "ifs24016-pabwe2026-proyek1-backend",
+  "version": "1.0.0",
+  "description": "REST API TanaRead (Express.js + SQLite via bun:sqlite)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/server.js",
+    "dev": "bun --watch src/server.js",
+    "db:init": "bun src/db/init.js",
+    "seed": "bun src/db/seed.js",
+    "test": "bun test",
+    "test:ci": "bun test --reporter=junit --reporter-outfile=reports/junit.xml"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  }
+}
