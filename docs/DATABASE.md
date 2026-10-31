@@ -1,10 +1,10 @@
-# Rancangan Database SQLite
+# Rancangan Database SQLite / libSQL
 
-Library: **`bun:sqlite`**, driver SQLite resmi yang sudah tertanam di Bun (tanpa dependency native, API sinkron bergaya better-sqlite3, mendukung prepared statement).
-Alasan tidak memakai `node:sqlite` di Bun: dukungannya di Bun baru muncul belakangan dan dokumentasi resmi Bun masih merujuk `bun:sqlite`; sumber pihak ketiga juga melaporkan
-handle SQLite pada Bun 1.4.2 dapat tertahan setelah `close()`.
-`src/db/connection.js` adalah satu-satunya tempat yang memilih driver: di bawah Bun memakai `bun:sqlite`; bila dijalankan dengan Node memakai `node:sqlite`
-(hanya agar logika data dapat diuji di lingkungan Node). Migrasi ditulis sebagai satu statement per entri agar aman untuk kedua driver.
+Library: **`@libsql/client`** (driver libSQL, SQLite yang kompatibel). Satu kode untuk dua mode:
+- **Lokal / Docker:** file SQLite (`DB_PATH`), memakai binding native libSQL (jalan di Bun maupun Node).
+- **Produksi serverless (Vercel):** database **Turso** (`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`) lewat klien web murni JavaScript. Data persisten dan dipakai bersama oleh semua instance fungsi.
+
+`src/db/connection.js` adalah satu-satunya tempat yang memilih driver dan membungkusnya menjadi antarmuka `prepare(sql).get/all/run(...)` yang **semuanya async**, plus `exec`, `batch`, dan `transaction(async (tx) => …)`. Semua service menerima `db` atau `tx` yang berantarmuka sama.
 
 ## Tabel
 
@@ -28,7 +28,7 @@ Indeks: `books(status)`, `books(category)`, `books(user_id)`, `reading_logs(book
 ## Inisialisasi & migrasi
 
 - `PRAGMA foreign_keys = ON` dijalankan eksplisit pada setiap koneksi; `journal_mode = WAL` untuk file database.
-- Migrasi berbasis `PRAGMA user_version` di `src/db/schema.js`; dijalankan otomatis saat server start dan aman diulang. Perubahan skema = tambah entri baru.
+- Migrasi dicatat di tabel `schema_migrations` (`src/db/schema.js`); dijalankan otomatis saat server start, aman diulang, dan aman bila dua instance mulai bersamaan. Database lama berbasis `PRAGMA user_version` tetap diakui. Perubahan skema = tambah entri baru.
 - Database **tidak pernah** dihapus/di-reset saat start. Seed demo hanya lewat `npm run seed` (menolak bila `NODE_ENV=production` atau database sudah berisi buku).
 - Semua query memakai parameter terikat (`?`); karakter `%`/`_` pada pencarian di-escape.
 - WAL memerlukan filesystem lokal pada disk persisten (hindari network filesystem).

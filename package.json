@@ -1,7 +1,7 @@
 {
   "name": "ifs24016-pabwe2026-proyek1-backend",
   "version": "1.0.0",
-  "description": "REST API TanaRead (Express.js + SQLite via bun:sqlite)",
+  "description": "REST API TanaRead (Express.js + SQLite/libSQL: file lokal atau Turso)",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
     "test:ci": "bun test --reporter=junit --reporter-outfile=reports/junit.xml"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "cors": "^2.8.5",
     "express": "^5.1.0"
   },

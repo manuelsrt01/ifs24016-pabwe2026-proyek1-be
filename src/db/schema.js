@@ -1,12 +1,13 @@
 /**
- * Migrasi skema berbasis PRAGMA user_version.
- * Aman dijalankan berulang: hanya migrasi dengan nomor > user_version yang dieksekusi.
+ * Migrasi skema yang dicatat di tabel schema_migrations (bekerja di SQLite lokal maupun Turso).
+ * Aman dijalankan berulang dan aman bila dua instance server menjalankannya bersamaan:
+ * hanya migrasi yang belum tercatat yang dieksekusi.
  * Untuk mengubah skema di masa depan, TAMBAHKAN entri baru; jangan mengubah entri lama.
  */
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
 export const MIGRATIONS = [
-  // v1: tabel awal. Setiap elemen = SATU statement SQL (kompatibel bun:sqlite & node:sqlite).
+  // v1: tabel awal. Setiap elemen = SATU statement SQL (kompatibel SQLite/libSQL).
   [
     `CREATE TABLE IF NOT EXISTS books (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,17 +75,39 @@ export const MIGRATIONS = [
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
-export function migrate(db) {
-  const current = db.prepare('PRAGMA user_version').get().user_version;
-  for (let v = current; v < MIGRATIONS.length; v += 1) {
-    db.exec('BEGIN IMMEDIATE');
+const appliedVersions = async (db) =>
+  new Set((await db.prepare('SELECT version FROM schema_migrations').all()).map((r) => r.version));
+
+/** Database lama (sebelum schema_migrations) mencatat versinya di PRAGMA user_version; ikut diakui di sini. */
+async function legacyVersion(db) {
+  try {
+    return (await db.prepare('PRAGMA user_version').get())?.user_version ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function currentVersion(db) {
+  return Math.max(0, ...(await appliedVersions(db)));
+}
+
+export async function migrate(db) {
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (${NOW}))`,
+  );
+  let applied = await appliedVersions(db);
+  if (applied.size === 0) {
+    const legacy = await legacyVersion(db);
+    for (let v = 1; v <= legacy; v += 1) await db.prepare('INSERT INTO schema_migrations (version) VALUES (?)').run(v);
+    applied = await appliedVersions(db);
+  }
+  for (let v = 1; v <= MIGRATIONS.length; v += 1) {
+    if (applied.has(v)) continue;
     try {
-      for (const statement of MIGRATIONS[v]) db.exec(statement);
-      db.exec(`PRAGMA user_version = ${v + 1}`);
-      db.exec('COMMIT');
+      await db.batch([...MIGRATIONS[v - 1], { sql: 'INSERT INTO schema_migrations (version) VALUES (?)', args: [v] }]);
     } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
+      // Instance lain mungkin baru saja menerapkan migrasi yang sama.
+      if (!(await appliedVersions(db)).has(v)) throw err;
     }
   }
 }

@@ -58,7 +58,7 @@ describe('Autentikasi', () => {
   let db;
   let srv;
   before(async () => {
-    db = openDatabase(':memory:');
+    db = await openDatabase(':memory:');
     srv = await startServer(db, new FailureLimiter({ max: 3 }));
   });
   after(async () => {
@@ -133,7 +133,7 @@ describe('API data (terautentikasi)', () => {
   let srv;
   let c;
   before(async () => {
-    db = openDatabase(':memory:');
+    db = await openDatabase(':memory:');
     srv = await startServer(db, new FailureLimiter());
     c = srv.client();
     await c.call('POST', '/api/auth/register', creds());
@@ -250,7 +250,7 @@ describe('API data (terautentikasi)', () => {
 
 describe('Isolasi antar pengguna via HTTP', () => {
   test('pengguna B tidak dapat mengakses buku dan log milik A', async () => {
-    const db = openDatabase(':memory:');
+    const db = await openDatabase(':memory:');
     const srv = await startServer(db, new FailureLimiter());
     try {
       const a = srv.client();
@@ -283,7 +283,7 @@ describe('Persistensi data setelah server dimulai ulang', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tanaread-api-'));
     const file = path.join(dir, 'persist.db');
     try {
-      let db = openDatabase(file);
+      let db = await openDatabase(file);
       let srv = await startServer(db, new FailureLimiter());
       const c1 = srv.client();
       await c1.call('POST', '/api/auth/register', creds('p@example.com'));
@@ -292,7 +292,7 @@ describe('Persistensi data setelah server dimulai ulang', () => {
       await srv.close();
       db.close();
 
-      db = openDatabase(file);
+      db = await openDatabase(file);
       srv = await startServer(db, new FailureLimiter());
       const c2 = srv.client();
       assert.equal((await c2.call('POST', '/api/auth/login', { email: 'p@example.com', password: 'rahasia123' })).status, 200);

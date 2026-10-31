@@ -1,4 +1,3 @@
-import { inTransaction } from '../db/connection.js';
 import { NotFoundError, ValidationError } from '../utils/errors.js';
 import { validateLogInput } from '../validators/log.js';
 import { applyLogProgress, ensureBookExists } from './bookService.js';
@@ -7,25 +6,25 @@ const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const SELECT_LOG = `SELECT l.*, b.title AS book_title
                       FROM reading_logs l JOIN books b ON b.id = l.book_id`;
 
-function findLog(db, userId, id) {
-  const row = db.prepare(`${SELECT_LOG} WHERE l.id = ? AND b.user_id = ?`).get(id, userId);
+async function findLog(db, userId, id) {
+  const row = await db.prepare(`${SELECT_LOG} WHERE l.id = ? AND b.user_id = ?`).get(id, userId);
   if (!row) throw new NotFoundError('Reading log');
   return { ...row };
 }
 
-export function getLog(db, userId, id) {
+export async function getLog(db, userId, id) {
   return findLog(db, userId, id);
 }
 
-export function listLogsForBook(db, userId, bookId) {
-  ensureBookExists(db, userId, bookId);
-  return db
+export async function listLogsForBook(db, userId, bookId) {
+  await ensureBookExists(db, userId, bookId);
+  const rows = await db
     .prepare(`${SELECT_LOG} WHERE l.book_id = ? ORDER BY l.log_date DESC, l.id DESC`)
-    .all(bookId)
-    .map((r) => ({ ...r }));
+    .all(bookId);
+  return rows.map((r) => ({ ...r }));
 }
 
-export function listLogs(db, userId, { bookId, from, to, limit = 50, offset = 0 } = {}) {
+export async function listLogs(db, userId, { bookId, from, to, limit = 50, offset = 0 } = {}) {
   const where = ['b.user_id = ?'];
   const params = [userId];
   if (bookId) {
@@ -41,18 +40,19 @@ export function listLogs(db, userId, { bookId, from, to, limit = 50, offset = 0 
     params.push(to);
   }
   const clause = `WHERE ${where.join(' AND ')}`;
-  const { total } = db
-    .prepare(`SELECT COUNT(*) AS total FROM reading_logs l JOIN books b ON b.id = l.book_id ${clause}`)
-    .get(...params);
-  const rows = db
-    .prepare(`${SELECT_LOG} ${clause} ORDER BY l.log_date DESC, l.id DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset)
-    .map((r) => ({ ...r }));
-  return { rows, total };
+  const [{ total }, rows] = await Promise.all([
+    db
+      .prepare(`SELECT COUNT(*) AS total FROM reading_logs l JOIN books b ON b.id = l.book_id ${clause}`)
+      .get(...params),
+    db
+      .prepare(`${SELECT_LOG} ${clause} ORDER BY l.log_date DESC, l.id DESC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset),
+  ]);
+  return { rows: rows.map((r) => ({ ...r })), total };
 }
 
-function assertWithinBook(db, userId, bookId, endPage) {
-  const book = db.prepare('SELECT id, total_pages FROM books WHERE id = ? AND user_id = ?').get(bookId, userId);
+async function assertWithinBook(db, userId, bookId, endPage) {
+  const book = await db.prepare('SELECT id, total_pages FROM books WHERE id = ? AND user_id = ?').get(bookId, userId);
   if (!book) throw new ValidationError({ book_id: 'Buku tidak ditemukan' });
   if (endPage > book.total_pages) {
     throw new ValidationError({
@@ -70,12 +70,12 @@ function assertWithinBook(db, userId, bookId, endPage) {
  *  - Total halaman pada statistik = SUM(pages_read) log, sehingga membaca ulang halaman
  *    yang sama dihitung sebagai aktivitas baru, tetapi tidak menambah progres buku.
  */
-export function createLog(db, userId, raw, { today }) {
+export async function createLog(db, userId, raw, { today }) {
   const input = validateLogInput(raw, { today });
-  return inTransaction(db, () => {
-    const book = assertWithinBook(db, userId, input.book_id, input.end_page);
-    const current = db.prepare('SELECT current_page FROM books WHERE id = ?').get(book.id).current_page;
-    const result = db
+  return db.transaction(async (tx) => {
+    const book = await assertWithinBook(tx, userId, input.book_id, input.end_page);
+    const { current_page: current } = await tx.prepare('SELECT current_page FROM books WHERE id = ?').get(book.id);
+    const result = await tx
       .prepare(
         `INSERT INTO reading_logs (book_id, log_date, start_page, end_page, pages_read, duration_minutes, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -89,20 +89,20 @@ export function createLog(db, userId, raw, { today }) {
         input.duration_minutes,
         input.notes,
       );
-    applyLogProgress(db, input.book_id, Math.max(current, input.end_page), input.log_date);
-    return findLog(db, userId, Number(result.lastInsertRowid));
+    await applyLogProgress(tx, input.book_id, Math.max(current, input.end_page), input.log_date);
+    return findLog(tx, userId, Number(result.lastInsertRowid));
   });
 }
 
-export function updateLog(db, userId, id, raw, { today }) {
-  const existing = findLog(db, userId, id);
+export async function updateLog(db, userId, id, raw, { today }) {
+  const existing = await findLog(db, userId, id);
   const input = validateLogInput(raw, { today, requireBookId: false });
   if (input.book_id !== undefined && input.book_id !== existing.book_id) {
     throw new ValidationError({ book_id: 'Reading log tidak dapat dipindahkan ke buku lain' });
   }
-  return inTransaction(db, () => {
-    assertWithinBook(db, userId, existing.book_id, input.end_page);
-    db.prepare(
+  return db.transaction(async (tx) => {
+    await assertWithinBook(tx, userId, existing.book_id, input.end_page);
+    await tx.prepare(
       `UPDATE reading_logs SET log_date = ?, start_page = ?, end_page = ?, pages_read = ?,
               duration_minutes = ?, notes = ?, updated_at = ${NOW}
         WHERE id = ?`,
@@ -115,21 +115,21 @@ export function updateLog(db, userId, id, raw, { today }) {
       input.notes,
       id,
     );
-    const { maxEnd } = db
+    const { maxEnd } = await tx
       .prepare('SELECT MAX(end_page) AS maxEnd FROM reading_logs WHERE book_id = ?')
       .get(existing.book_id);
-    applyLogProgress(db, existing.book_id, maxEnd, input.log_date);
-    return findLog(db, userId, id);
+    await applyLogProgress(tx, existing.book_id, maxEnd, input.log_date);
+    return findLog(tx, userId, id);
   });
 }
 
-export function deleteLog(db, userId, id) {
-  const existing = findLog(db, userId, id);
-  inTransaction(db, () => {
-    db.prepare('DELETE FROM reading_logs WHERE id = ?').run(id);
-    const { maxEnd } = db
+export async function deleteLog(db, userId, id) {
+  const existing = await findLog(db, userId, id);
+  await db.transaction(async (tx) => {
+    await tx.prepare('DELETE FROM reading_logs WHERE id = ?').run(id);
+    const { maxEnd } = await tx
       .prepare('SELECT MAX(end_page) AS maxEnd FROM reading_logs WHERE book_id = ?')
       .get(existing.book_id);
-    if (maxEnd !== null) applyLogProgress(db, existing.book_id, maxEnd, existing.log_date);
+    if (maxEnd !== null) await applyLogProgress(tx, existing.book_id, maxEnd, existing.log_date);
   });
 }

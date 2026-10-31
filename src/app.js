@@ -30,10 +30,10 @@ export function createApp({ db, config, today, limiter = new FailureLimiter() })
   app.use(cors({ origin: config.corsOrigins, credentials: true }));
   app.use(express.json({ limit: '100kb' }));
 
-  app.get('/api/health', (req, res) => {
+  app.get('/api/health', async (req, res) => {
     let dbStatus = 'ok';
     try {
-      db.prepare('SELECT 1').get();
+      await db.prepare('SELECT 1').get();
     } catch {
       dbStatus = 'error';
     }

@@ -7,14 +7,14 @@ import { TooManyRequestsError, UnauthorizedError } from '../utils/errors.js';
 
 export function authRouter({ db, config, limiter }) {
   const router = Router();
-  const startSession = (res, user) => {
-    const { token, expiresAt } = createSession(db, user.id);
+  const startSession = async (res, user) => {
+    const { token, expiresAt } = await createSession(db, user.id);
     setSessionCookie(res, token, expiresAt, config.cookieSecure);
   };
 
   router.post('/register', async (req, res) => {
     const user = await registerUser(db, req.body);
-    startSession(res, user);
+    await startSession(res, user);
     res.status(201).json({ data: user });
   });
 
@@ -30,20 +30,20 @@ export function authRouter({ db, config, limiter }) {
       throw err;
     }
     limiter.reset(key);
-    startSession(res, user);
+    await startSession(res, user);
     res.json({ data: user });
   });
 
-  router.post('/logout', (req, res) => {
-    deleteSession(db, readSessionToken(req));
+  router.post('/logout', async (req, res) => {
+    await deleteSession(db, readSessionToken(req));
     clearSessionCookie(res, config.cookieSecure);
     res.status(204).end();
   });
 
   router.get('/me', requireAuth, (req, res) => res.json({ data: req.user }));
-  router.patch('/me', requireAuth, (req, res) => res.json({ data: updateProfile(db, req.user.id, req.body) }));
-  router.delete('/me/data', requireAuth, (req, res) => {
-    deleteAllUserData(db, req.user.id);
+  router.patch('/me', requireAuth, async (req, res) => res.json({ data: await updateProfile(db, req.user.id, req.body) }));
+  router.delete('/me/data', requireAuth, async (req, res) => {
+    await deleteAllUserData(db, req.user.id);
     res.status(204).end();
   });
 

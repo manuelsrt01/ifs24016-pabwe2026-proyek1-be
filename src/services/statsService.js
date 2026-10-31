@@ -4,8 +4,8 @@ import { listReadingBooks } from './bookService.js';
 const round1 = (n) => Math.round(n * 10) / 10;
 
 /** Ringkasan harian untuk rentang tanggal; hari tanpa aktivitas diisi 0. */
-export function dailyActivity(db, userId, from, to) {
-  const rows = db
+export async function dailyActivity(db, userId, from, to) {
+  const rows = await db
     .prepare(
       `SELECT l.log_date AS date,
               SUM(l.pages_read) AS pages,
@@ -22,8 +22,9 @@ export function dailyActivity(db, userId, from, to) {
   );
 }
 
-export function getDashboardSummary(db, userId, { today }) {
-  const books = db
+export async function getDashboardSummary(db, userId, { today }) {
+  // Query saling bebas, dijalankan paralel agar ringkasan cepat walau database berada di cloud.
+  const booksQuery = db
     .prepare(
       `SELECT COUNT(*) AS total_books,
               COALESCE(SUM(status = 'sedang_dibaca'), 0) AS reading,
@@ -33,7 +34,7 @@ export function getDashboardSummary(db, userId, { today }) {
          FROM books WHERE user_id = ?`,
     )
     .get(userId);
-  const logs = db
+  const logsQuery = db
     .prepare(
       `SELECT COALESCE(SUM(l.duration_minutes), 0) AS total_minutes,
               COALESCE(SUM(l.pages_read), 0) AS pages_logged,
@@ -41,7 +42,7 @@ export function getDashboardSummary(db, userId, { today }) {
          FROM reading_logs l JOIN books b ON b.id = l.book_id WHERE b.user_id = ?`,
     )
     .get(userId);
-  const recent = db
+  const recentQuery = db
     .prepare(
       `SELECT l.id, l.book_id, b.title AS book_title, l.log_date, l.start_page, l.end_page,
               l.pages_read, l.duration_minutes, l.notes
@@ -50,8 +51,14 @@ export function getDashboardSummary(db, userId, { today }) {
         ORDER BY l.log_date DESC, l.id DESC LIMIT 5`,
     )
     .all(userId);
-  const { daily_goal_pages: goal } = db.prepare('SELECT daily_goal_pages FROM users WHERE id = ?').get(userId);
-  const last7 = dailyActivity(db, userId, addDays(today, -6), today);
+  const [books, logs, recent, { daily_goal_pages: goal }, last7, readingBooks] = await Promise.all([
+    booksQuery,
+    logsQuery,
+    recentQuery,
+    db.prepare('SELECT daily_goal_pages FROM users WHERE id = ?').get(userId),
+    dailyActivity(db, userId, addDays(today, -6), today),
+    listReadingBooks(db, userId, 5),
+  ]);
 
   return {
     total_books: books.total_books,
@@ -65,13 +72,13 @@ export function getDashboardSummary(db, userId, { today }) {
     daily_goal_pages: goal,
     today: last7[last7.length - 1],
     last_7_days: last7,
-    reading_books: listReadingBooks(db, userId, 5),
+    reading_books: readingBooks,
     recent_logs: recent.map((r) => ({ ...r })),
   };
 }
 
-export function getReadingActivity(db, userId, { from, to }) {
-  const days = dailyActivity(db, userId, from, to);
+export async function getReadingActivity(db, userId, { from, to }) {
+  const days = await dailyActivity(db, userId, from, to);
   return {
     from,
     to,
@@ -110,15 +117,16 @@ export function computeStreaks(activeDatesAsc, today) {
 }
 
 /** days = bilangan bulat (hari terakhir termasuk hari ini) atau null untuk "semua waktu". */
-export function getReadingHabits(db, userId, { days, today }) {
+export async function getReadingHabits(db, userId, { days, today }) {
   const own = 'b.user_id = ?';
-  const allDates = db
-    .prepare(
-      `SELECT DISTINCT l.log_date FROM reading_logs l JOIN books b ON b.id = l.book_id
-        WHERE ${own} ORDER BY l.log_date ASC`,
-    )
-    .all(userId)
-    .map((r) => r.log_date);
+  const allDates = (
+    await db
+      .prepare(
+        `SELECT DISTINCT l.log_date FROM reading_logs l JOIN books b ON b.id = l.book_id
+          WHERE ${own} ORDER BY l.log_date ASC`,
+      )
+      .all(userId)
+  ).map((r) => r.log_date);
 
   let from;
   let periodDays = days;
@@ -129,7 +137,7 @@ export function getReadingHabits(db, userId, { days, today }) {
     from = addDays(today, -(days - 1));
   }
 
-  const t = db
+  const tQuery = db
     .prepare(
       `SELECT COALESCE(SUM(l.pages_read), 0) AS total_pages,
               COALESCE(SUM(l.duration_minutes), 0) AS total_minutes,
@@ -140,17 +148,18 @@ export function getReadingHabits(db, userId, { days, today }) {
     )
     .get(userId, from, today);
 
-  const finished = db
+  const finishedQuery = db
     .prepare(
       `SELECT id, title, author, total_pages, finished_at FROM books
         WHERE user_id = ? AND status = 'selesai' AND finished_at BETWEEN ? AND ?
         ORDER BY finished_at DESC, id DESC`,
     )
-    .all(userId, from, today)
-    .map((r) => ({ ...r }));
-  const { n: finishedAllTime } = db
+    .all(userId, from, today);
+  const finishedCountQuery = db
     .prepare("SELECT COUNT(*) AS n FROM books WHERE user_id = ? AND status = 'selesai'")
     .get(userId);
+  const [t, finishedRows, { n: finishedAllTime }] = await Promise.all([tQuery, finishedQuery, finishedCountQuery]);
+  const finished = finishedRows.map((r) => ({ ...r }));
 
   return {
     period: { from, to: today, days: periodDays, all_time: days === null },
@@ -181,8 +190,8 @@ export function getReadingHabits(db, userId, { days, today }) {
 }
 
 /** Sebaran buku per kategori (seluruh koleksi pengguna). */
-export function getCategoryDistribution(db, userId) {
-  const rows = db
+export async function getCategoryDistribution(db, userId) {
+  const rows = await db
     .prepare(
       `SELECT COALESCE(NULLIF(TRIM(category), ''), 'Tanpa kategori') AS category, COUNT(*) AS books
          FROM books WHERE user_id = ?

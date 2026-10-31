@@ -26,10 +26,14 @@ export function clearSessionCookie(res, secure) {
 
 /** Mengisi req.user (objek pengguna publik atau null) dari cookie sesi. */
 export function sessionMiddleware(db) {
-  return (req, res, next) => {
-    const token = readSessionToken(req);
-    req.user = token ? getSessionUser(db, token) : null;
-    next();
+  return async (req, res, next) => {
+    try {
+      const token = readSessionToken(req);
+      req.user = token ? await getSessionUser(db, token) : null;
+      next();
+    } catch (err) {
+      next(err);
+    }
   };
 }
 

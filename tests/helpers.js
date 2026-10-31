@@ -7,8 +7,8 @@ export const ctx = { today: TODAY };
 /** ID pengguna uji default (dibuat otomatis oleh makeDb / addUser). */
 export const U = 1;
 
-export function addUser(db, email = 'uji@example.com') {
-  const r = db
+export async function addUser(db, email = 'uji@example.com') {
+  const r = await db
     .prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)')
     .run('Pengguna Uji', email, 'scrypt$00$00');
   return Number(r.lastInsertRowid);
@@ -27,9 +27,9 @@ export function removeTempDir(dir) {
   }
 }
 
-export function makeDb() {
-  const db = openDatabase(':memory:');
-  addUser(db); // id 1 = U
+export async function makeDb() {
+  const db = await openDatabase(':memory:');
+  await addUser(db); // id 1 = U
   return db;
 }
 

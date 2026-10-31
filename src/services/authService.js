@@ -63,8 +63,8 @@ export async function registerUser(db, raw) {
   const { name, email, password } = validateRegister(raw);
   const passwordHash = await hashPassword(password);
   try {
-    const r = db.prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)').run(name, email, passwordHash);
-    return getUserById(db, Number(r.lastInsertRowid));
+    const r = await db.prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)').run(name, email, passwordHash);
+    return await getUserById(db, Number(r.lastInsertRowid));
   } catch (err) {
     if (/UNIQUE/i.test(String(err?.message))) throw new ConflictError({ email: 'Email sudah terdaftar' }, 'Email sudah terdaftar');
     throw err;
@@ -76,48 +76,51 @@ export async function loginUser(db, raw) {
       || isBlank(raw.email) || raw.password === '') {
     throw new ValidationError({ email: 'Email dan kata sandi wajib diisi' });
   }
-  const row = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizeEmail(raw.email));
+  const row = await db.prepare('SELECT * FROM users WHERE email = ?').get(normalizeEmail(raw.email));
   const ok = await verifyPassword(raw.password, row ? row.password_hash : await getDummyHash());
   if (!row || !ok) throw new UnauthorizedError('Email atau kata sandi salah');
   return publicUser(row);
 }
 
-export function getUserById(db, id) {
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+export async function getUserById(db, id) {
+  const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   return row ? publicUser(row) : null;
 }
 
 // ---------- sesi (token acak; yang disimpan di DB hanya hash SHA-256-nya) ----------
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
-export function createSession(db, userId, now = new Date()) {
+export async function createSession(db, userId, now = new Date()) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = new Date(now.getTime() + SESSION_TTL_DAYS * 86400000);
-  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
-  db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(
+  await db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
+  await db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(
     hashToken(token), userId, expiresAt.toISOString(),
   );
   return { token, expiresAt };
 }
 
-export function getSessionUser(db, token, now = new Date()) {
+export async function getSessionUser(db, token, now = new Date()) {
   if (typeof token !== 'string' || token === '') return null;
   const id = hashToken(token);
-  const s = db.prepare('SELECT user_id, expires_at FROM sessions WHERE id = ?').get(id);
-  if (!s) return null;
-  if (s.expires_at < now.toISOString()) {
-    db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  // Satu query (JOIN) agar hemat round-trip ke database jarak jauh.
+  const row = await db
+    .prepare('SELECT u.*, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?')
+    .get(id);
+  if (!row) return null;
+  if (row.expires_at < now.toISOString()) {
+    await db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
     return null;
   }
-  return getUserById(db, s.user_id);
+  return publicUser(row);
 }
 
-export function deleteSession(db, token) {
-  if (typeof token === 'string' && token) db.prepare('DELETE FROM sessions WHERE id = ?').run(hashToken(token));
+export async function deleteSession(db, token) {
+  if (typeof token === 'string' && token) await db.prepare('DELETE FROM sessions WHERE id = ?').run(hashToken(token));
 }
 
 // ---------- profil & pengaturan ----------
-export function updateProfile(db, userId, raw) {
+export async function updateProfile(db, userId, raw) {
   if (!requireBodyObject(raw)) throw new ValidationError({ _body: 'Body harus berupa objek JSON' });
   const e = {};
   const hasName = !isBlank(raw.name);
@@ -130,13 +133,13 @@ export function updateProfile(db, userId, raw) {
   }
   if (!hasName && !hasGoal) e._body = 'Tidak ada data yang diubah';
   if (Object.keys(e).length) throw new ValidationError(e);
-  db.prepare(
+  await db.prepare(
     `UPDATE users SET name = COALESCE(?, name), daily_goal_pages = COALESCE(?, daily_goal_pages), updated_at = ${NOW} WHERE id = ?`,
   ).run(name, goal, userId);
   return getUserById(db, userId);
 }
 
 /** Menghapus semua buku milik pengguna (reading log ikut terhapus lewat cascade). Akun tetap ada. */
-export function deleteAllUserData(db, userId) {
-  db.prepare('DELETE FROM books WHERE user_id = ?').run(userId);
+export async function deleteAllUserData(db, userId) {
+  await db.prepare('DELETE FROM books WHERE user_id = ?').run(userId);
 }

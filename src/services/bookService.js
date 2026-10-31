@@ -1,4 +1,3 @@
-import { inTransaction } from '../db/connection.js';
 import { NotFoundError, ValidationError } from '../utils/errors.js';
 import { validateBookInput } from '../validators/book.js';
 
@@ -18,7 +17,7 @@ function escapeLike(text) {
   return text.replace(/[\\%_]/g, '\\$&');
 }
 
-export function listBooks(db, userId, { q, status, category } = {}) {
+export async function listBooks(db, userId, { q, status, category } = {}) {
   const where = ['user_id = ?'];
   const params = [userId];
   if (q) {
@@ -35,19 +34,19 @@ export function listBooks(db, userId, { q, status, category } = {}) {
     params.push(category);
   }
   const sql = `SELECT * FROM books WHERE ${where.join(' AND ')} ORDER BY updated_at DESC, id DESC`;
-  return db.prepare(sql).all(...params).map(decorate);
+  return (await db.prepare(sql).all(...params)).map(decorate);
 }
 
 /** Mengambil baris buku MILIK pengguna; buku milik orang lain diperlakukan sama seperti tidak ada (404). */
-function findBookRow(db, userId, id) {
-  const row = db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(id, userId);
+async function findBookRow(db, userId, id) {
+  const row = await db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(id, userId);
   if (!row) throw new NotFoundError('Buku');
   return row;
 }
 
-export function getBook(db, userId, id) {
-  const book = decorate(findBookRow(db, userId, id));
-  const summary = db
+export async function getBook(db, userId, id) {
+  const book = decorate(await findBookRow(db, userId, id));
+  const summary = await db
     .prepare(
       `SELECT COUNT(*) AS sessions,
               COALESCE(SUM(pages_read), 0) AS total_pages_logged,
@@ -58,9 +57,9 @@ export function getBook(db, userId, id) {
   return { ...book, log_summary: { ...summary } };
 }
 
-export function createBook(db, userId, raw, { today }) {
+export async function createBook(db, userId, raw, { today }) {
   const b = validateBookInput(raw, { today });
-  const result = db
+  const result = await db
     .prepare(
       `INSERT INTO books (user_id, title, author, category, total_pages, current_page, status, started_at, finished_at, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -69,10 +68,10 @@ export function createBook(db, userId, raw, { today }) {
   return getBook(db, userId, Number(result.lastInsertRowid));
 }
 
-export function updateBook(db, userId, id, raw, { today }) {
-  findBookRow(db, userId, id);
+export async function updateBook(db, userId, id, raw, { today }) {
+  await findBookRow(db, userId, id);
   const b = validateBookInput(raw, { today });
-  const { maxEnd } = db
+  const { maxEnd } = await db
     .prepare('SELECT MAX(end_page) AS maxEnd FROM reading_logs WHERE book_id = ?')
     .get(id);
   if (maxEnd !== null && b.total_pages < maxEnd) {
@@ -80,7 +79,7 @@ export function updateBook(db, userId, id, raw, { today }) {
       total_pages: `Total halaman tidak boleh lebih kecil dari halaman akhir pada reading log (${maxEnd})`,
     });
   }
-  db.prepare(
+  await db.prepare(
     `UPDATE books SET title = ?, author = ?, category = ?, total_pages = ?, current_page = ?,
             status = ?, started_at = ?, finished_at = ?, notes = ?, updated_at = ${NOW}
       WHERE id = ? AND user_id = ?`,
@@ -89,11 +88,9 @@ export function updateBook(db, userId, id, raw, { today }) {
 }
 
 /** Menghapus buku. Reading log terkait ikut terhapus (ON DELETE CASCADE). */
-export function deleteBook(db, userId, id) {
-  findBookRow(db, userId, id);
-  inTransaction(db, () => {
-    db.prepare('DELETE FROM books WHERE id = ? AND user_id = ?').run(id, userId);
-  });
+export async function deleteBook(db, userId, id) {
+  await findBookRow(db, userId, id);
+  await db.prepare('DELETE FROM books WHERE id = ? AND user_id = ?').run(id, userId);
 }
 
 export function ensureBookExists(db, userId, id) {
@@ -101,11 +98,11 @@ export function ensureBookExists(db, userId, id) {
 }
 
 /** Buku yang sedang dibaca, terbaru diperbarui dulu (untuk "Lanjutkan Membaca"). */
-export function listReadingBooks(db, userId, limit = 5) {
-  return db
+export async function listReadingBooks(db, userId, limit = 5) {
+  const rows = await db
     .prepare("SELECT * FROM books WHERE user_id = ? AND status = 'sedang_dibaca' ORDER BY updated_at DESC, id DESC LIMIT ?")
-    .all(userId, limit)
-    .map(decorate);
+    .all(userId, limit);
+  return rows.map(decorate);
 }
 
 /**
@@ -117,8 +114,8 @@ export function listReadingBooks(db, userId, limit = 5) {
  *  - current_page = 0            -> tetap belum_dibaca bila sebelumnya belum_dibaca, selain itu sedang_dibaca
  *  - started_at = tanggal paling awal antara started_at lama dan logDate (bila ada progres)
  */
-export function applyLogProgress(db, bookId, newCurrent, logDate) {
-  const book = db.prepare('SELECT * FROM books WHERE id = ?').get(bookId);
+export async function applyLogProgress(db, bookId, newCurrent, logDate) {
+  const book = await db.prepare('SELECT * FROM books WHERE id = ?').get(bookId);
   const total = book.total_pages;
   const current = Math.min(Math.max(newCurrent, 0), total);
 
@@ -136,7 +133,7 @@ export function applyLogProgress(db, bookId, newCurrent, logDate) {
     else status = book.status === 'belum_dibaca' ? 'belum_dibaca' : 'sedang_dibaca';
   }
 
-  db.prepare(
+  await db.prepare(
     `UPDATE books SET current_page = ?, status = ?, started_at = ?, finished_at = ?, updated_at = ${NOW}
       WHERE id = ?`,
   ).run(current, status, started, finished, bookId);

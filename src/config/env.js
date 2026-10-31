@@ -22,6 +22,9 @@ export function getConfig(env = process.env) {
     nodeEnv: env.NODE_ENV || 'development',
     port: Number.isInteger(port) ? port : 3000,
     dbPath: env.DB_PATH ? path.resolve(env.DB_PATH) : path.join(SERVER_ROOT, 'data', 'tanaread.db'),
+    // Produksi memakai Turso (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN); tanpa itu dipakai file SQLite lokal di DB_PATH.
+    dbTarget: env.TURSO_DATABASE_URL || env.DB_PATH || './data/tanaread.db',
+    dbAuthToken: env.TURSO_AUTH_TOKEN || undefined,
     timezone: env.APP_TIMEZONE || 'Asia/Jakarta',
     corsOrigins: (env.CORS_ORIGIN || 'http://localhost:5173')
       .split(',')
